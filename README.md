@@ -58,7 +58,7 @@ chmod +x qrar
 **Optional:**
 - `openssl` - Encryption support (`-e` flag)
 - `ffmpeg` - Video/GIF output (`-V`, `-G`) and video input
-- `imagemagick` - Montage/print output (`-M`, `-P`) and PDF input
+- `imagemagick` - Montage/print output (`-m`, `-P`) and PDF input
 - `ghostscript` - PDF input (used by ImageMagick)
 
 The `install` command will detect your package manager and offer to install missing dependencies.
@@ -90,7 +90,7 @@ qrar encode -G archive.tar.gz
 qrar encode -V large-file.bin
 
 # Create montage (all QR codes in one image)
-qrar encode -M backup.tar.gz
+qrar encode -m backup.tar.gz
 
 # Create print-ready PDF montage
 qrar encode -P backup.tar.gz
@@ -124,7 +124,8 @@ qrar decode -e secret.txt.qr.*.png
 | `-T, --terminal` | Display QR code(s) in terminal |
 | `-G, --gif` | Output as animated GIF |
 | `-V, --video` | Output as MP4 video |
-| `-M, --montage` | Output as print-ready PDF |
+| `-m, --montage` | Consolidate all QR codes in one image |
+| `-P, --print` | Consolidate all QR codes in a print-ready multi-page PDF |
 | `-q, --quiet` | Suppress non-essential output |
 | `--verbose` | Show detailed progress |
 | `-v, --version` | Show version |
@@ -158,7 +159,7 @@ qrar decode -e phone-recording.mov
 qrar decode photo-of-printout.jpg
 
 # Create printable backup of encryption keys
-qrar encode -e -M ~/.ssh/id_ed25519
+qrar encode -e -P ~/.ssh/id_ed25519
 ```
 
 ## License
