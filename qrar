@@ -673,7 +673,7 @@ is_video_file() {
     ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
 
     case "$ext" in
-        mp4|mov|avi|mkv|webm|m4v|flv|wmv|3gp)
+        mp4|mov|avi|mkv|webm|m4v|flv|wmv|3gp|gif)
             return 0
             ;;
     esac
@@ -1141,13 +1141,23 @@ extract_video_frames() {
 
     verbose "Extracting frames from: $video"
 
-    # Extract at 5fps to balance coverage and performance
-    ffmpeg -i "$video" -vf "fps=5" -q:v 2 "$output_dir/frame_%06d.jpg" \
-        -loglevel error -y 2>/dev/null || \
-        die "Failed to extract frames from: $video"
+    # Check if it's a GIF (extract all frames) or video (extract at 5fps)
+    local ext="${video##*.}"
+    ext=$(echo "$ext" | tr '[:upper:]' '[:lower:]')
+
+    if [[ "$ext" == "gif" ]]; then
+        # GIFs: extract every frame
+        ffmpeg -y -loglevel error -i "$video" "$output_dir/frame_%06d.png" || \
+            die "Failed to extract frames from: $video"
+    else
+        # Videos: extract at 10fps for reliable QR code capture
+        ffmpeg -i "$video" -vf "fps=10" -q:v 2 "$output_dir/frame_%06d.jpg" \
+            -loglevel error -y 2>/dev/null || \
+            die "Failed to extract frames from: $video"
+    fi
 
     local frame_count
-    frame_count=$(ls -1 "$output_dir"/frame_*.jpg 2>/dev/null | wc -l | tr -d ' ')
+    frame_count=$(find "$output_dir" -name "frame_*.jpg" -o -name "frame_*.png" 2>/dev/null | wc -l | tr -d ' ')
     verbose "Extracted $frame_count frames"
 }
 
@@ -1269,8 +1279,8 @@ decode_files() {
             mkdir -p "$frame_dir"
             extract_video_frames "$input" "$frame_dir"
 
-            # Add extracted frames to image list
-            for frame in "$frame_dir"/frame_*.jpg; do
+            # Add extracted frames to image list (jpg for videos, png for gifs)
+            for frame in "$frame_dir"/frame_*.jpg "$frame_dir"/frame_*.png; do
                 if [[ -f "$frame" ]]; then
                     all_images="$all_images $frame"
                 fi
