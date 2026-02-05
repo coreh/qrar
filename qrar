@@ -704,9 +704,10 @@ detect_os() {
             ;;
         Linux)
             if [[ -f /etc/os-release ]]; then
-                # shellcheck source=/dev/null
-                . /etc/os-release
-                case "$ID" in
+                # Parse ID from os-release (don't source to avoid variable conflicts)
+                local distro_id
+                distro_id=$(grep -E "^ID=" /etc/os-release | cut -d= -f2 | tr -d '"')
+                case "$distro_id" in
                     debian|ubuntu|linuxmint|pop)
                         os="debian"
                         ;;
