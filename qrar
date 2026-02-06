@@ -1178,8 +1178,8 @@ extract_pdf_pages() {
         die "ImageMagick is required for PDF input. Run 'qrar install' or install manually."
     fi
 
-    # Convert at 300 DPI for good QR code readability
-    $convert_cmd -density 300 "$pdf" -quality 90 "$output_dir/page_%03d.png" 2>/dev/null || \
+    # Convert at 600 DPI for reliable QR code scanning (especially montage pages)
+    $convert_cmd -density 600 "$pdf" -quality 100 "$output_dir/page_%03d.png" 2>/dev/null || \
         die "Failed to extract pages from PDF: $pdf (is ghostscript installed?)"
 
     local page_count
