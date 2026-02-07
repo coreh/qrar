@@ -27,6 +27,7 @@ TERMINAL_OUTPUT=""    # Terminal output mode: UTF8, ANSI, ASCII (empty = disable
 VIDEO_MODE=false      # Video output mode (mp4)
 GIF_MODE=false        # GIF output mode
 FRAME_DURATION=0.25   # Seconds per QR code in video/GIF (250ms)
+WEBCAM_MODE=false     # Webcam decode mode
 
 # Colors for output
 RED='\033[0;31m'
@@ -1579,12 +1580,390 @@ parse_chunk() {
     echo "$session|$seq|$total|$checksum|$enc_flag|$comp_flag|$chunk_data"
 }
 
+# Render an image as half-block terminal art using truecolor ANSI escapes.
+# Uses the lower-half-block character (▄) with fg=lower pixel, bg=upper pixel
+# to display two vertical pixels per character cell.
+# Outputs rendered lines to stdout.
+render_frame_preview() {
+    local image="$1"
+    local max_width="$2"
+    local max_pix_height="$3"
+    local convert_cmd="$4"
+
+    $convert_cmd "$image" -resize "${max_width}x${max_pix_height}" -depth 8 txt:- 2>/dev/null | \
+        awk '
+        /^[0-9]/ {
+            split($1, c, "[,:]")
+            x = c[1] + 0
+            y = c[2] + 0
+            v = $2; gsub(/[()]/, "", v); split(v, rgb, ",")
+            k = x "," y
+            R[k] = rgb[1] + 0; G[k] = rgb[2] + 0; B[k] = rgb[3] + 0
+            if (x >= W) W = x + 1
+            if (y >= H) H = y + 1
+        }
+        END {
+            for (y = 0; y < H; y += 2) {
+                line = ""
+                for (x = 0; x < W; x++) {
+                    uk = x "," y; lk = x "," (y + 1)
+                    ur = R[uk]+0; ug = G[uk]+0; ub = B[uk]+0
+                    if (y + 1 < H) { lr = R[lk]+0; lg = G[lk]+0; lb = B[lk]+0 }
+                    else { lr = 0; lg = 0; lb = 0 }
+                    line = line sprintf("\033[48;2;%d;%d;%dm\033[38;2;%d;%d;%dm\342\226\204", ur, ug, ub, lr, lg, lb)
+                }
+                print line "\033[0m"
+            }
+        }'
+}
+
+decode_webcam() {
+    local qr_file="$1"
+    local sessions_dir="$2"
+    local session_info_file="$3"
+
+    if ! check_ffmpeg; then
+        die "ffmpeg is required for webcam mode. Run 'qrar install' or install manually."
+    fi
+
+    # Check if ImageMagick is available for live preview
+    local preview_convert_cmd=""
+    if command -v magick &>/dev/null; then
+        preview_convert_cmd="magick"
+    elif command -v convert &>/dev/null; then
+        preview_convert_cmd="convert"
+    fi
+
+    # Detect webcam input format and enumerate devices
+    local os
+    os=$(detect_os)
+    local ff_input_fmt=""
+    local ff_input_dev=""
+
+    case "$os" in
+        macos)
+            ff_input_fmt="avfoundation"
+
+            # Enumerate video devices via avfoundation
+            local -a cam_indices=()
+            local -a cam_names=()
+            local enum_output
+            enum_output=$(ffmpeg -f avfoundation -list_devices true -i "" 2>&1) || true
+
+            local in_video=false
+            while IFS= read -r line; do
+                if [[ "$line" == *"AVFoundation video devices:"* ]]; then
+                    in_video=true
+                    continue
+                fi
+                if [[ "$line" == *"AVFoundation audio devices:"* ]]; then
+                    break
+                fi
+                if [[ "$in_video" == true ]]; then
+                    # Line format: [AVFoundation indev @ 0x...] [INDEX] Device Name
+                    local rest="${line##*\] \[}"
+                    if [[ "$rest" != "$line" ]]; then
+                        local idx="${rest%%\]*}"
+                        local name="${rest#*\] }"
+                        cam_indices+=("$idx")
+                        cam_names+=("$name")
+                    fi
+                fi
+            done <<< "$enum_output"
+
+            if [[ ${#cam_indices[@]} -eq 0 ]]; then
+                die "No webcam devices found"
+            elif [[ ${#cam_indices[@]} -eq 1 ]]; then
+                ff_input_dev="${cam_indices[0]}:none"
+                verbose "Using webcam: ${cam_names[0]}"
+            else
+                log_info "Available webcams:"
+                for ((i=0; i<${#cam_indices[@]}; i++)); do
+                    echo "  $((i + 1))) ${cam_names[$i]}" >&2
+                done
+                printf "Select webcam [1-%d] (default: 1): " "${#cam_indices[@]}" >&2
+                local choice
+                read -r choice
+                choice="${choice:-1}"
+                if [[ "$choice" -ge 1 && "$choice" -le ${#cam_indices[@]} ]] 2>/dev/null; then
+                    local ci=$((choice - 1))
+                    ff_input_dev="${cam_indices[$ci]}:none"
+                    log_info "Using webcam: ${cam_names[$ci]}"
+                else
+                    die "Invalid selection: $choice"
+                fi
+            fi
+            ;;
+        *)
+            ff_input_fmt="v4l2"
+
+            # Enumerate /dev/video* devices
+            local -a cam_devs=()
+            local -a cam_names=()
+            for dev in /dev/video*; do
+                if [[ -c "$dev" ]]; then
+                    local name="$dev"
+                    # Try to get friendly name via v4l2-ctl
+                    if command -v v4l2-ctl &>/dev/null; then
+                        local v4l_name
+                        v4l_name=$(v4l2-ctl -d "$dev" --info 2>/dev/null | \
+                            grep "Card type" | sed 's/.*: //') || true
+                        if [[ -n "$v4l_name" ]]; then
+                            name="$v4l_name ($dev)"
+                        fi
+                    fi
+                    cam_devs+=("$dev")
+                    cam_names+=("$name")
+                fi
+            done
+
+            if [[ ${#cam_devs[@]} -eq 0 ]]; then
+                die "No webcam devices found in /dev/video*"
+            elif [[ ${#cam_devs[@]} -eq 1 ]]; then
+                ff_input_dev="${cam_devs[0]}"
+                verbose "Using webcam: ${cam_names[0]}"
+            else
+                log_info "Available webcams:"
+                for ((i=0; i<${#cam_devs[@]}; i++)); do
+                    echo "  $((i + 1))) ${cam_names[$i]}" >&2
+                done
+                printf "Select webcam [1-%d] (default: 1): " "${#cam_devs[@]}" >&2
+                local choice
+                read -r choice
+                choice="${choice:-1}"
+                if [[ "$choice" -ge 1 && "$choice" -le ${#cam_devs[@]} ]] 2>/dev/null; then
+                    local ci=$((choice - 1))
+                    ff_input_dev="${cam_devs[$ci]}"
+                    log_info "Using webcam: ${cam_names[$ci]}"
+                else
+                    die "Invalid selection: $choice"
+                fi
+            fi
+            ;;
+    esac
+
+    # Create webcam frame directory
+    local webcam_dir="$TEMP_DIR/webcam"
+    mkdir -p "$webcam_dir"
+
+    local ffmpeg_log="$TEMP_DIR/ffmpeg.log"
+
+    # Start ffmpeg capturing frames in background
+    log_info "Starting webcam capture..."
+    ffmpeg -f "$ff_input_fmt" -video_size 1920x1080 -framerate 30 -i "$ff_input_dev" \
+        -vf "fps=5" -q:v 2 \
+        "$webcam_dir/frame_%06d.jpg" \
+        -loglevel error -y 2>"$ffmpeg_log" &
+    local ffmpeg_pid=$!
+
+    # Register cleanup to kill ffmpeg on exit
+    trap "kill $ffmpeg_pid 2>/dev/null; wait $ffmpeg_pid 2>/dev/null; cleanup" EXIT INT TERM
+
+    # Wait for ffmpeg to start producing frames (up to 5 seconds)
+    local startup_wait=0
+    while [[ $startup_wait -lt 50 ]]; do
+        # If ffmpeg already died, no point waiting
+        if ! kill -0 "$ffmpeg_pid" 2>/dev/null; then
+            break
+        fi
+        # Check if at least one frame has been produced
+        if ls "$webcam_dir"/frame_*.jpg &>/dev/null; then
+            break
+        fi
+        sleep 0.1
+        startup_wait=$((startup_wait + 1))
+    done
+
+    # Check if ffmpeg is still running
+    if ! kill -0 "$ffmpeg_pid" 2>/dev/null; then
+        local ffmpeg_err=""
+        if [[ -s "$ffmpeg_log" ]]; then
+            ffmpeg_err=$(cat "$ffmpeg_log")
+        fi
+        if [[ -n "$ffmpeg_err" ]]; then
+            log_error "ffmpeg: $ffmpeg_err"
+        fi
+        die "Failed to start webcam capture. Check that your webcam is connected and accessible."
+    fi
+
+    log_info "Scanning webcam for QR codes... (press Ctrl+C to stop)"
+
+    # Preview dimensions — adapt to terminal size
+    local preview_lines=0
+    local preview_width=160
+    local preview_pix_height=80
+    if [[ -n "$preview_convert_cmd" ]]; then
+        local term_cols term_rows
+        term_cols=$(tput cols 2>/dev/null || echo 80)
+        term_rows=$(tput lines 2>/dev/null || echo 24)
+        # Cap width to terminal width
+        if [[ $term_cols -lt $preview_width ]]; then
+            preview_width=$term_cols
+        fi
+        # Cap height to ~60% of terminal (in char rows), convert to pixels (*2)
+        local max_char_rows=$(( term_rows * 3 / 5 ))
+        if [[ $max_char_rows -lt 5 ]]; then
+            max_char_rows=5
+        fi
+        local max_pix=$(( max_char_rows * 2 ))
+        if [[ $max_pix -lt $preview_pix_height ]]; then
+            preview_pix_height=$max_pix
+        fi
+    fi
+
+    # Polling loop — always grab the latest frame (skip stale ones)
+    local best_session=""
+    local best_total=0
+    local found_count=0
+    local -a seen_chunks=()
+    local all_found=false
+
+    while [[ "$all_found" != true ]]; do
+        # Wait for any frame to be available
+        local wait_count=0
+        while ! ls "$webcam_dir"/frame_*.jpg &>/dev/null; do
+            if ! kill -0 "$ffmpeg_pid" 2>/dev/null; then
+                if [[ $found_count -gt 0 ]]; then
+                    all_found=true; break 2
+                else
+                    die "Webcam capture ended unexpectedly"
+                fi
+            fi
+            sleep 0.05
+            wait_count=$((wait_count + 1))
+            if [[ $wait_count -ge 200 ]]; then
+                if [[ $found_count -gt 0 ]]; then
+                    all_found=true; break 2
+                else
+                    die "Webcam capture timed out waiting for frames"
+                fi
+            fi
+        done
+
+        # Grab the latest frame, skip any older ones
+        local frame_file
+        frame_file=$(ls -1 "$webcam_dir"/frame_*.jpg 2>/dev/null | tail -1)
+        if [[ -z "$frame_file" || ! -f "$frame_file" ]]; then
+            continue
+        fi
+
+        # Brief pause for write completion
+        sleep 0.05
+
+        # --- All work below happens with no terminal output (double buffer) ---
+
+        # Scan frame for QR codes
+        local scan_result=""
+        scan_result=$(scan_images "$frame_file" 2>/dev/null) || true
+
+        # Process scan results, buffer log messages
+        local pending_output=""
+        if [[ -n "$scan_result" ]]; then
+            while IFS= read -r qr_line; do
+                [[ -z "$qr_line" ]] && continue
+
+                local parsed
+                parsed=$(parse_chunk "$qr_line")
+
+                local session seq total checksum enc_flag comp_flag chunk_data
+                IFS='|' read -r session seq total checksum enc_flag comp_flag chunk_data <<< "$parsed"
+
+                local chunk_key="${session}_${seq}"
+                local already_seen=false
+                for seen in "${seen_chunks[@]}"; do
+                    if [[ "$seen" == "$chunk_key" ]]; then
+                        already_seen=true
+                        break
+                    fi
+                done
+
+                if [[ "$already_seen" == true ]]; then
+                    continue
+                fi
+
+                seen_chunks+=("$chunk_key")
+
+                if [[ -z "$best_session" ]]; then
+                    best_session="$session"
+                    best_total=$total
+                fi
+
+                if [[ "$session" != "$best_session" ]]; then
+                    continue
+                fi
+
+                local sess_dir="$sessions_dir/$session"
+                if [[ ! -d "$sess_dir" ]]; then
+                    mkdir -p "$sess_dir"
+                    echo "$session|$total|$checksum|$enc_flag|$comp_flag" >> "$session_info_file"
+                fi
+                echo "$chunk_data" > "$sess_dir/chunk_$seq.txt"
+                echo "$qr_line" >> "$qr_file"
+
+                found_count=$((found_count + 1))
+                pending_output+="${BLUE}[INFO]${NC} Found chunk $seq/$total (session $best_session)\n"
+
+                if [[ $found_count -ge $best_total ]]; then
+                    pending_output+="${GREEN}[OK]${NC} All $best_total chunks found\n"
+                    all_found=true
+                    break
+                fi
+
+            done <<< "$scan_result"
+        fi
+
+        # Render new preview into variable (double buffer)
+        local new_preview=""
+        local new_preview_lines=0
+        if [[ -n "$preview_convert_cmd" && "$all_found" != true ]]; then
+            new_preview=$(render_frame_preview "$frame_file" "$preview_width" "$preview_pix_height" "$preview_convert_cmd") || true
+            if [[ -n "$new_preview" ]]; then
+                new_preview_lines=$(printf '%s\n' "$new_preview" | wc -l | tr -d ' ')
+            fi
+        fi
+
+        # Delete all current frames to avoid buildup
+        rm -f "$webcam_dir"/frame_*.jpg
+
+        # --- Atomic display update: erase old preview, print logs, draw new ---
+        {
+            if [[ $preview_lines -gt 0 ]]; then
+                printf '\033[%dA\033[J' "$preview_lines"
+            fi
+            if [[ -n "$pending_output" ]]; then
+                printf '%b' "$pending_output"
+            fi
+            if [[ -n "$new_preview" ]]; then
+                printf '%s\n' "$new_preview"
+            fi
+        } >&2
+        preview_lines=$new_preview_lines
+    done
+
+    # Erase final preview
+    if [[ $preview_lines -gt 0 ]]; then
+        printf '\033[%dA\033[J' "$preview_lines" >&2
+        preview_lines=0
+    fi
+
+    # Kill ffmpeg (|| true: prevent set -e from exiting on signal status)
+    kill "$ffmpeg_pid" 2>/dev/null || true
+    wait "$ffmpeg_pid" 2>/dev/null || true
+
+    # Restore default trap
+    trap cleanup EXIT
+
+    if [[ $found_count -eq 0 ]]; then
+        die "No qrar codes found via webcam"
+    fi
+}
+
 decode_files() {
     local output_path="$1"
     shift
     local inputs=("$@")
 
-    if [[ ${#inputs[@]} -eq 0 ]]; then
+    if [[ "$WEBCAM_MODE" != true && ${#inputs[@]} -eq 0 ]]; then
         die "No input files specified"
     fi
 
@@ -1592,106 +1971,115 @@ decode_files() {
     TEMP_DIR=$(mktemp -d)
     verbose "Using temp directory: $TEMP_DIR"
 
-    local -a all_images=()
-
-    # Process inputs: expand videos and PDFs to images
-    for input in "${inputs[@]}"; do
-        if [[ ! -e "$input" ]]; then
-            log_warn "Input not found, skipping: $input"
-            continue
-        fi
-
-        if is_video_file "$input"; then
-            if ! check_ffmpeg; then
-                log_warn "ffmpeg not found, skipping video: $input"
-                continue
-            fi
-
-            local frame_dir="$TEMP_DIR/frames_$$_${RANDOM}"
-            mkdir -p "$frame_dir"
-            extract_video_frames "$input" "$frame_dir"
-
-            # Add extracted frames to image list (jpg for videos, png for gifs)
-            for frame in "$frame_dir"/frame_*.jpg "$frame_dir"/frame_*.png; do
-                if [[ -f "$frame" ]]; then
-                    all_images+=("$frame")
-                fi
-            done
-        elif is_pdf_file "$input"; then
-            if ! check_ghostscript; then
-                log_warn "ghostscript not found, skipping PDF: $input"
-                continue
-            fi
-
-            local pdf_dir="$TEMP_DIR/pdf_$$_${RANDOM}"
-            mkdir -p "$pdf_dir"
-            extract_pdf_pages "$input" "$pdf_dir"
-
-            # Add extracted pages to image list
-            for page in "$pdf_dir"/page_*.png; do
-                if [[ -f "$page" ]]; then
-                    all_images+=("$page")
-                fi
-            done
-        else
-            all_images+=("$input")
-        fi
-    done
-
-    if [[ ${#all_images[@]} -eq 0 ]]; then
-        die "No valid images to process"
-    fi
-
-    local img_count=${#all_images[@]}
-
-    log_info "Scanning $img_count image(s)..."
-
-    # Scan all images for QR codes and save to temp file
+    # Shared state for scan phase
     local qr_file="$TEMP_DIR/qrcodes.txt"
     : > "$qr_file"
-
-    for img in "${all_images[@]}"; do
-        scan_images "$img" >> "$qr_file"
-    done
-
-    local qr_count
-    qr_count=$(wc -l < "$qr_file" | tr -d ' ')
-
-    if [[ $qr_count -eq 0 ]]; then
-        die "No qrar codes found in the input"
-    fi
-
-    log_info "Found $qr_count qrar code(s)"
-
-    # Parse all chunks and group by session ID
-    # Store chunks in temp files per session
     local sessions_dir="$TEMP_DIR/sessions"
     mkdir -p "$sessions_dir"
-
-    local -a sessions_found=()
     local session_info_file="$TEMP_DIR/session_info.txt"
     : > "$session_info_file"
+    local -a sessions_found=()
 
-    while IFS= read -r qr_data; do
-        local parsed
-        parsed=$(parse_chunk "$qr_data")
+    if [[ "$WEBCAM_MODE" == true ]]; then
+        # Webcam scan phase
+        decode_webcam "$qr_file" "$sessions_dir" "$session_info_file"
 
-        local session seq total checksum enc_flag comp_flag chunk_data
-        IFS='|' read -r session seq total checksum enc_flag comp_flag chunk_data <<< "$parsed"
-
-        # Create session directory if needed
-        local sess_dir="$sessions_dir/$session"
-        if [[ ! -d "$sess_dir" ]]; then
-            mkdir -p "$sess_dir"
+        # Populate sessions_found from session_info_file
+        while IFS='|' read -r session _rest; do
             sessions_found+=("$session")
-            # Store session info
-            echo "$session|$total|$checksum|$enc_flag|$comp_flag" >> "$session_info_file"
+        done < "$session_info_file"
+    else
+        # File scan phase
+        local -a all_images=()
+
+        # Process inputs: expand videos and PDFs to images
+        for input in "${inputs[@]}"; do
+            if [[ ! -e "$input" ]]; then
+                log_warn "Input not found, skipping: $input"
+                continue
+            fi
+
+            if is_video_file "$input"; then
+                if ! check_ffmpeg; then
+                    log_warn "ffmpeg not found, skipping video: $input"
+                    continue
+                fi
+
+                local frame_dir="$TEMP_DIR/frames_$$_${RANDOM}"
+                mkdir -p "$frame_dir"
+                extract_video_frames "$input" "$frame_dir"
+
+                # Add extracted frames to image list (jpg for videos, png for gifs)
+                for frame in "$frame_dir"/frame_*.jpg "$frame_dir"/frame_*.png; do
+                    if [[ -f "$frame" ]]; then
+                        all_images+=("$frame")
+                    fi
+                done
+            elif is_pdf_file "$input"; then
+                if ! check_ghostscript; then
+                    log_warn "ghostscript not found, skipping PDF: $input"
+                    continue
+                fi
+
+                local pdf_dir="$TEMP_DIR/pdf_$$_${RANDOM}"
+                mkdir -p "$pdf_dir"
+                extract_pdf_pages "$input" "$pdf_dir"
+
+                # Add extracted pages to image list
+                for page in "$pdf_dir"/page_*.png; do
+                    if [[ -f "$page" ]]; then
+                        all_images+=("$page")
+                    fi
+                done
+            else
+                all_images+=("$input")
+            fi
+        done
+
+        if [[ ${#all_images[@]} -eq 0 ]]; then
+            die "No valid images to process"
         fi
 
-        # Store chunk data
-        echo "$chunk_data" > "$sess_dir/chunk_$seq.txt"
+        local img_count=${#all_images[@]}
 
-    done < "$qr_file"
+        log_info "Scanning $img_count image(s)..."
+
+        # Scan all images for QR codes
+        for img in "${all_images[@]}"; do
+            scan_images "$img" >> "$qr_file"
+        done
+
+        local qr_count
+        qr_count=$(wc -l < "$qr_file" | tr -d ' ')
+
+        if [[ $qr_count -eq 0 ]]; then
+            die "No qrar codes found in the input"
+        fi
+
+        log_info "Found $qr_count qrar code(s)"
+
+        # Parse all chunks and group by session ID
+        while IFS= read -r qr_data; do
+            local parsed
+            parsed=$(parse_chunk "$qr_data")
+
+            local session seq total checksum enc_flag comp_flag chunk_data
+            IFS='|' read -r session seq total checksum enc_flag comp_flag chunk_data <<< "$parsed"
+
+            # Create session directory if needed
+            local sess_dir="$sessions_dir/$session"
+            if [[ ! -d "$sess_dir" ]]; then
+                mkdir -p "$sess_dir"
+                sessions_found+=("$session")
+                # Store session info
+                echo "$session|$total|$checksum|$enc_flag|$comp_flag" >> "$session_info_file"
+            fi
+
+            # Store chunk data
+            echo "$chunk_data" > "$sess_dir/chunk_$seq.txt"
+
+        done < "$qr_file"
+    fi
 
     local session_count=${#sessions_found[@]}
 
@@ -1882,7 +2270,7 @@ qrar - Encode/decode files to/from QR codes
 
 USAGE:
     qrar encode [OPTIONS] -o <output> <file>...
-    qrar decode [OPTIONS] -o <output> <image>...
+    qrar decode [OPTIONS] [-W] -o <output> [<image>...]
     qrar install [OPTIONS]
     qrar update
     qrar uninstall
@@ -1907,6 +2295,7 @@ OPTIONS:
     -T, --terminal [mode]   Display QR codes in terminal (default: UTF8)
                             Modes: UTF8, ANSI, ASCII, UTF8i, ANSI256
                             If -o is omitted, only displays (no file output)
+    -W, --webcam            Decode from live webcam feed (requires ffmpeg)
     -V, --video             Create MP4 video cycling through QR codes
     -G, --gif               Create animated GIF cycling through QR codes
     --frame-duration <sec>  Seconds per QR code in video/GIF (default: 2)
@@ -1954,6 +2343,9 @@ EXAMPLES:
     # Decode from a video recording
     qrar decode -o ./restored/ recording.mp4
 
+    # Decode from live webcam feed
+    qrar decode -W -o ./restored/
+
     # Decode from mixed sources
     qrar decode -o ./restored/ photo.jpg video.mp4 screenshot.png
 
@@ -1963,6 +2355,7 @@ NOTES:
     - PDFs are scanned page-by-page (requires ghostscript)
     - Multiple QR codes in a single image are detected
     - File metadata (permissions, dates) is preserved via tar
+    - Webcam mode (-W) captures live video for real-time QR scanning
     - QR codes from other sources are ignored
 
 ERROR CORRECTION LEVELS:
@@ -2139,6 +2532,10 @@ main() {
                     esac
                 fi
                 ;;
+            -W|--webcam)
+                WEBCAM_MODE=true
+                shift
+                ;;
             -V|--video)
                 VIDEO_MODE=true
                 shift
@@ -2193,7 +2590,11 @@ main() {
             encode_files "$output" "${inputs[@]}"
             ;;
         decode)
-            decode_files "${output:-.}" "${inputs[@]}"
+            if [[ "$WEBCAM_MODE" == true ]]; then
+                decode_files "${output:-.}"
+            else
+                decode_files "${output:-.}" "${inputs[@]}"
+            fi
             ;;
     esac
 }
