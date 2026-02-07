@@ -301,13 +301,18 @@ encode_files() {
     shift
     local inputs=("$@")
 
+    # If no inputs provided and stdin is a pipe, read from stdin
+    if [[ ${#inputs[@]} -eq 0 && ! -t 0 ]]; then
+        inputs=("-")
+    fi
+
     if [[ ${#inputs[@]} -eq 0 ]]; then
         die "No input files specified"
     fi
 
     # Validate inputs exist
     for input in "${inputs[@]}"; do
-        if [[ ! -e "$input" ]]; then
+        if [[ "$input" != "-" && ! -e "$input" ]]; then
             die "Input not found: $input"
         fi
     done
@@ -337,17 +342,39 @@ encode_files() {
             ;;
     esac
 
+    # Materialize stdin to temp file if `-` is in inputs
+    for i in "${!inputs[@]}"; do
+        if [[ "${inputs[$i]}" == "-" ]]; then
+            local stdin_file="$TEMP_DIR/stdin"
+            cat > "$stdin_file"
+            inputs[$i]="$stdin_file"
+        fi
+    done
+
     log_info "Creating archive..."
 
     # Create tar archive
     local archive="$TEMP_DIR/archive$tar_ext"
-    if [[ -n "$tar_compress" ]]; then
-        tar -c $tar_compress -f "$archive" "${inputs[@]}" 2>/dev/null || \
-            die "Failed to create tar archive"
-    else
-        tar -c -f "$archive" "${inputs[@]}" 2>/dev/null || \
-            die "Failed to create tar archive"
+
+    # Build tar args, using -C for stdin temp files
+    local -a tar_args=(-c)
+    [[ -n "$tar_compress" ]] && tar_args+=($tar_compress)
+    tar_args+=(-f "$archive")
+
+    local has_stdin=false
+    for input in "${inputs[@]}"; do
+        if [[ "$input" == "$TEMP_DIR/stdin" ]]; then
+            has_stdin=true
+        else
+            tar_args+=("$input")
+        fi
+    done
+    if [[ "$has_stdin" == true ]]; then
+        tar_args+=(-C "$TEMP_DIR" "stdin")
     fi
+
+    tar "${tar_args[@]}" 2>/dev/null || \
+        die "Failed to create tar archive"
 
     local archive_size
     archive_size=$(wc -c < "$archive" | tr -d ' ')
@@ -2027,6 +2054,11 @@ decode_files() {
     shift
     local inputs=("$@")
 
+    # If no inputs provided and stdin is a pipe, read from stdin
+    if [[ "$WEBCAM_MODE" != true && ${#inputs[@]} -eq 0 && ! -t 0 ]]; then
+        inputs=("-")
+    fi
+
     if [[ "$WEBCAM_MODE" != true && ${#inputs[@]} -eq 0 ]]; then
         die "No input files specified"
     fi
@@ -2055,6 +2087,15 @@ decode_files() {
     else
         # File scan phase
         local -a all_images=()
+
+        # Materialize stdin to temp file if `-` is in inputs
+        for i in "${!inputs[@]}"; do
+            if [[ "${inputs[$i]}" == "-" ]]; then
+                local stdin_input="$TEMP_DIR/stdin_input"
+                cat > "$stdin_input"
+                inputs[$i]="$stdin_input"
+            fi
+        done
 
         # Process inputs: expand videos and PDFs to images
         for input in "${inputs[@]}"; do
@@ -2237,9 +2278,9 @@ decode_files() {
         log_info "Data is encrypted"
 
         if [[ -z "$ENCRYPT" ]]; then
-            printf "Enter decryption passphrase: "
-            read -rs ENCRYPT
-            echo
+            printf "Enter decryption passphrase: " > /dev/tty
+            read -rs ENCRYPT < /dev/tty
+            echo > /dev/tty
         fi
 
         archive_file="$TEMP_DIR/decrypted.bin"
@@ -2333,8 +2374,8 @@ show_help() {
 qrar - Encode/decode files to/from QR codes
 
 USAGE:
-    qrar encode [OPTIONS] -o <output> <file>...
-    qrar decode [OPTIONS] [-W] -o <output> [<image>...]
+    qrar encode [OPTIONS] -o <output> <file | ->...
+    qrar decode [OPTIONS] [-W] -o <output> [<image | ->...]
     qrar install [OPTIONS]
     qrar update
     qrar uninstall
@@ -2421,7 +2462,17 @@ EXAMPLES:
     # Decode from mixed sources
     qrar decode -o ./restored/ photo.jpg video.mp4 screenshot.png
 
+    # Encode data piped from stdin
+    echo "hello" | qrar encode -T -
+
+    # Encode piped data to a file
+    cat secret.txt | qrar encode -o backup.png -
+
+    # Decode a QR code image piped from stdin
+    cat qrcode.png | qrar decode -o ./restored/ -
+
 NOTES:
+    - Use - as input to read from stdin (piped data)
     - Large files are automatically split across multiple QR codes
     - Videos are scanned frame-by-frame for QR codes
     - PDFs are scanned page-by-page (requires ghostscript)
@@ -2549,12 +2600,12 @@ main() {
                 ;;
             -e|--encrypt)
                 if [[ -z "$ENCRYPT" ]]; then
-                    printf "Enter encryption passphrase: "
-                    read -rs ENCRYPT
-                    echo
-                    printf "Confirm passphrase: "
-                    read -rs confirm
-                    echo
+                    printf "Enter encryption passphrase: " > /dev/tty
+                    read -rs ENCRYPT < /dev/tty
+                    echo > /dev/tty
+                    printf "Confirm passphrase: " > /dev/tty
+                    read -rs confirm < /dev/tty
+                    echo > /dev/tty
                     if [[ "$ENCRYPT" != "$confirm" ]]; then
                         die "Passphrases do not match"
                     fi
@@ -2633,6 +2684,10 @@ main() {
                 inputs+=("$@")
                 break
                 ;;
+            -)
+                inputs+=("-")
+                shift
+                ;;
             -*)
                 die "Unknown option: $1"
                 ;;
@@ -2647,6 +2702,10 @@ main() {
     case "$command" in
         encode)
             if [[ "$WEBCAM_MODE" == true && -z "$TERMINAL_OUTPUT" ]]; then
+                TERMINAL_OUTPUT="UTF8"
+            fi
+            # Default to terminal display when stdout is a pipe and no output specified
+            if [[ ! -t 1 && -z "$TERMINAL_OUTPUT" && -z "$output" && -z "$OUTPUT_DIR" && "$WEBCAM_MODE" != true ]]; then
                 TERMINAL_OUTPUT="UTF8"
             fi
             if [[ -z "$output" && -z "$OUTPUT_DIR" ]]; then
