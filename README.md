@@ -22,6 +22,10 @@ qrar decode myfile.txt.qr.*.png
   - Animated GIF
   - Video (MP4)
   - Print-ready PDF montage
+- **Webcam support**:
+  - Live scanning - Point your webcam at QR codes and decode in real-time
+  - Streaming - Transfer files between machines by cycling QR codes on one screen and scanning with a webcam on the other
+  - Live camera preview in the terminal via half-block Unicode characters (requires ImageMagick)
 - **Video/PDF input** - Extract and decode QR codes from video files or multi-page PDFs
 - **Robust decoding**:
   - Multiple QR codes per image (e.g., printed sheets)
@@ -57,11 +61,25 @@ chmod +x qrar
 
 **Optional:**
 - `openssl` - Encryption support (`-e` flag)
-- `ffmpeg` - Video/GIF output (`-V`, `-G`) and video input
-- `imagemagick` - Montage/print output (`-m`, `-P`) and PDF input
+- `ffmpeg` - Video/GIF output (`-V`, `-G`), video input, and webcam capture (`-W`)
+- `imagemagick` - Montage/print output (`-m`, `-P`), PDF input, and webcam preview (`-W`)
 - `ghostscript` - PDF input (used by ImageMagick)
 
 The `install` command will detect your package manager and offer to install missing dependencies.
+
+### Update
+
+```bash
+qrar update
+```
+
+### Uninstall
+
+```bash
+qrar uninstall
+```
+
+This removes the `qrar` script and optionally uninstalls its dependencies.
 
 ## Usage
 
@@ -94,6 +112,9 @@ qrar encode -m backup.tar.gz
 
 # Create print-ready PDF montage
 qrar encode -P backup.tar.gz
+
+# Stream QR codes to terminal for webcam scanning
+qrar encode -W document.pdf
 ```
 
 ### Decode QR codes back to file
@@ -113,6 +134,9 @@ qrar decode scanned-pages.pdf
 
 # With decryption
 qrar decode -e secret.txt.qr.*.png
+
+# From webcam (live scanning)
+qrar decode -W
 ```
 
 ### Options
@@ -125,6 +149,7 @@ qrar decode -e secret.txt.qr.*.png
 | `-G, --gif` | Output as animated GIF |
 | `-V, --video` | Output as MP4 video |
 | `-m, --montage` | Consolidate all QR codes in one image |
+| `-W, --webcam` | Webcam streaming mode (encode: cycle QR codes at 2fps; decode: scan from webcam) |
 | `-P, --print` | Consolidate all QR codes in a print-ready multi-page PDF |
 | `-q, --quiet` | Suppress non-essential output |
 | `--verbose` | Show detailed progress |
@@ -160,6 +185,12 @@ qrar decode photo-of-printout.jpg
 
 # Create printable backup of encryption keys
 qrar encode -e -P ~/.ssh/id_ed25519
+
+# Transfer a file between two machines via webcam
+# Machine A (sender):
+qrar encode -e -W secret.txt
+# Machine B (receiver, point webcam at Machine A's screen):
+qrar decode -e -W -o ./received/
 ```
 
 ## License
