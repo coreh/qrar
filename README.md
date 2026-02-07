@@ -1,6 +1,6 @@
 # qrar
 
-Encode and decode files to/from QR codes. Supports splitting large files across multiple QR codes, optional encryption, and various output formats.
+Pure shell, single file utility script to encode and decode multiple files to/from QR codes. (Via `qrencode`, `zbarimg`, `tar`, `ffmpeg`, `magick`, `openssl`, `ghostscript`) Supports splitting large files across multiple QR codes, compression, optional encryption, and various output/input formats, including live webcam feed.
 
 ```bash
 # Encode file(s) to QR code(s)
