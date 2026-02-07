@@ -1017,11 +1017,23 @@ install_dependencies() {
     fi
 
     # Install script
-    if [[ "$deps_only" == false ]]; then
-        echo "" >&2
-        offer_script_install "$piped_install"
-    elif [[ "$install_script" == true ]]; then
-        offer_script_install "$piped_install"
+    if [[ "$deps_only" == false || "$install_script" == true ]]; then
+        # Check if already running from an installed location
+        local resolved_path="$script_path"
+        if [[ -n "$resolved_path" && -f "$resolved_path" ]]; then
+            while [[ -L "$resolved_path" ]]; do
+                resolved_path=$(readlink "$resolved_path")
+            done
+            # Get absolute path
+            resolved_path=$(cd "$(dirname "$resolved_path")" && pwd)/$(basename "$resolved_path")
+        fi
+
+        if [[ "$resolved_path" == "/usr/local/bin/qrar" || "$resolved_path" == "$HOME/.local/bin/qrar" ]]; then
+            log_success "qrar already installed at $resolved_path"
+        else
+            echo "" >&2
+            offer_script_install "$piped_install"
+        fi
     fi
 }
 
@@ -1134,6 +1146,68 @@ install_script_to_path() {
     else
         die "Failed to install qrar to $target"
     fi
+}
+
+update_script() {
+    local download_url="${QRAR_DOWNLOAD_URL:-https://raw.githubusercontent.com/coreh/qrar/main/qrar}"
+
+    # Find where qrar is currently installed
+    local script_path="${BASH_SOURCE[0]}"
+    if [[ -n "$script_path" && -f "$script_path" ]]; then
+        while [[ -L "$script_path" ]]; do
+            script_path=$(readlink "$script_path")
+        done
+        script_path=$(cd "$(dirname "$script_path")" && pwd)/$(basename "$script_path")
+    fi
+
+    if [[ -z "$script_path" || ! -f "$script_path" ]]; then
+        die "Cannot determine current script location. Install qrar first with 'qrar install'."
+    fi
+
+    local target_dir
+    target_dir=$(dirname "$script_path")
+
+    # Fetch remote script
+    log_info "Checking for updates..."
+    local tmp_script
+    tmp_script=$(mktemp)
+    trap "rm -f '$tmp_script'; cleanup" EXIT
+
+    if ! curl -fsSL "$download_url" -o "$tmp_script"; then
+        rm -f "$tmp_script"
+        die "Failed to fetch update from $download_url"
+    fi
+
+    # Extract remote version
+    local remote_version
+    remote_version=$(grep -m1 '^readonly VERSION=' "$tmp_script" | sed 's/readonly VERSION="//;s/"//')
+
+    if [[ -z "$remote_version" ]]; then
+        rm -f "$tmp_script"
+        die "Could not determine remote version"
+    fi
+
+    if [[ "$remote_version" == "$VERSION" ]]; then
+        log_success "Already up to date (v$VERSION)"
+        rm -f "$tmp_script"
+        trap cleanup EXIT
+        return 0
+    fi
+
+    log_info "Latest version is v$remote_version, you have v$VERSION. Updating..."
+
+    chmod +x "$tmp_script"
+    if [[ -w "$target_dir" ]]; then
+        cp "$tmp_script" "$script_path" || die "Failed to update qrar at $script_path"
+        chmod 755 "$script_path" || die "Failed to make qrar executable"
+    else
+        sudo cp "$tmp_script" "$script_path" || die "Failed to update qrar at $script_path (sudo)"
+        sudo chmod 755 "$script_path" || die "Failed to make qrar executable (sudo)"
+    fi
+
+    rm -f "$tmp_script"
+    trap cleanup EXIT
+    log_success "Updated qrar to v$remote_version at $script_path"
 }
 
 extract_video_frames() {
@@ -1553,11 +1627,13 @@ USAGE:
     qrar encode [OPTIONS] -o <output> <file>...
     qrar decode [OPTIONS] -o <output> <image>...
     qrar install [OPTIONS]
+    qrar update
 
 COMMANDS:
     encode    Encode files/directories into QR code image(s)
     decode    Decode QR code image(s)/video(s) back to files
     install   Install dependencies and optionally the script itself
+    update    Update qrar to the latest version from GitHub
 
 OPTIONS:
     -o, --output <path>     Output path (file for encode, directory for decode)
@@ -1645,6 +1721,9 @@ INSTALL COMMAND:
     qrar install --deps-only Only install dependencies, not the script
     qrar install --script-only Only install the script to PATH
 
+UPDATE COMMAND:
+    qrar update              Fetch latest version from GitHub and install
+
     Supported package managers:
     - macOS:   Homebrew (brew)
     - Debian:  apt (Ubuntu, Mint, Pop!_OS)
@@ -1689,6 +1768,10 @@ main() {
             install_dependencies "$@"
             exit 0
             ;;
+        update)
+            update_script
+            exit 0
+            ;;
         -h|--help)
             show_help
             exit 0
@@ -1698,7 +1781,7 @@ main() {
             exit 0
             ;;
         *)
-            die "Unknown command: ${1:-}. Use 'encode', 'decode', or 'install'."
+            die "Unknown command: ${1:-}. Use 'encode', 'decode', 'install', or 'update'."
             ;;
     esac
 
