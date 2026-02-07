@@ -32,6 +32,7 @@ qrar decode myfile.txt.qr.*.png
   - Any order, with duplicates handled automatically
   - Missing chunks detected and reported
   - Unrelated QR codes ignored
+- **Stdin/pipe support** - Read input from stdin via `-` or automatic detection, and pipe output through `-T`
 - **Cross-platform** - Works on macOS, Linux, and BSD with automatic dependency detection
 
 ## Installation
@@ -115,6 +116,16 @@ qrar encode -P backup.tar.gz
 
 # Stream QR codes to terminal for webcam scanning
 qrar encode -W document.pdf
+
+# Encode from stdin (auto-detected)
+echo "hello world" | qrar encode -T
+cat secret.txt | qrar encode -o backup.png
+
+# Pipe-friendly (defaults to -T when stdout is a pipe)
+cat secret.txt | qrar encode | less
+
+# Mix stdin with file inputs using explicit -
+cat header.txt | qrar encode -T - footer.txt
 ```
 
 ### Decode QR codes back to file
@@ -137,6 +148,10 @@ qrar decode -e secret.txt.qr.*.png
 
 # From webcam (live scanning)
 qrar decode -W
+
+# Decode from stdin (auto-detected)
+cat qrcode.png | qrar decode
+cat recording.mp4 | qrar decode
 ```
 
 ### Options
