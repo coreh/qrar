@@ -243,6 +243,59 @@ trap cleanup EXIT
 # Encode Functions
 #------------------------------------------------------------------------------
 
+# Cycle QR codes in terminal at 2fps for webcam streaming mode
+cycle_qr_terminal() {
+    local terminal_mode="$1"
+    local error_level="$2"
+    shift 2
+    local payloads=("$@")
+    local total=${#payloads[@]}
+
+    # Pre-render all QR codes to terminal strings
+    log_info "Preparing $total QR code(s) for display..."
+    local -a rendered=()
+    local -a line_counts=()
+    for ((i=0; i<total; i++)); do
+        local qr_raw qr_output
+        # Use UTF8i (inverted mapping: █=dark module, space=light module)
+        # combined with black-on-white ANSI colors for correct dark-on-light QR codes
+        qr_raw=$(printf '%s' "${payloads[$i]}" | qrencode -8 -l "$error_level" -t UTF8i -o -)
+        qr_output=$'\033[30;107m'"${qr_raw}"$'\033[0m'
+        rendered+=("$qr_output")
+        local lc
+        lc=$(printf '%s\n' "$qr_output" | wc -l | tr -d ' ')
+        line_counts+=("$lc")
+    done
+
+    local display_lines=0
+
+    # Clean up display on exit
+    trap '{
+        if [[ $display_lines -gt 0 ]]; then
+            printf "\033[%dA\033[J" "$display_lines" >&2
+        fi
+    }' INT TERM
+
+    log_info "Streaming $total QR code(s) at 2fps... (press Ctrl+C to stop)"
+
+    while true; do
+        for ((i=0; i<total; i++)); do
+            # Atomic update: erase old + status + QR code
+            {
+                if [[ $display_lines -gt 0 ]]; then
+                    printf '\033[%dA\033[J' "$display_lines"
+                fi
+                printf '%b\n' "${BLUE}[INFO]${NC} QR Code $((i + 1))/$total"
+                printf '%s\n' "${rendered[$i]}"
+                printf '\033[J'
+            } >&2
+            display_lines=$(( ${line_counts[$i]} + 1 ))
+
+            sleep 0.5
+        done
+    done
+}
+
 encode_files() {
     local output_base="$1"
     shift
@@ -381,6 +434,7 @@ encode_files() {
     local chunk_num=1
     local offset=0
     local -a generated_files=()
+    local -a qr_payloads=()
 
     while [[ $offset -lt $b64_size ]]; do
         # Read chunk data
@@ -391,8 +445,13 @@ encode_files() {
         local header="${MAGIC}:V1:${enc_flag}${comp_flag}:${chunk_num}/${total_chunks}:${session_id}:${checksum}:"
         local qr_data="${header}${chunk_data}"
 
-        # Display in terminal if requested
-        if [[ -n "$TERMINAL_OUTPUT" ]]; then
+        # Collect payloads for webcam cycling mode
+        if [[ "$WEBCAM_MODE" == true ]]; then
+            qr_payloads+=("$qr_data")
+        fi
+
+        # Display in terminal if requested (skip in webcam mode — cycling handles it)
+        if [[ -n "$TERMINAL_OUTPUT" && "$WEBCAM_MODE" != true ]]; then
             if [[ $total_chunks -gt 1 ]]; then
                 echo ""
                 echo "--- QR Code $chunk_num of $total_chunks ---"
@@ -660,6 +719,11 @@ encode_files() {
         fi
 
         generate_video "$gif_file" "gif" "$FRAME_DURATION" "${generated_files[@]}"
+    fi
+
+    # Webcam streaming mode: cycle QR codes in terminal at 2fps
+    if [[ "$WEBCAM_MODE" == true && ${#qr_payloads[@]} -gt 0 ]]; then
+        cycle_qr_terminal "${TERMINAL_OUTPUT:-UTF8}" "$ERROR_LEVEL" "${qr_payloads[@]}"
     fi
 }
 
@@ -1751,7 +1815,7 @@ decode_webcam() {
     # Start ffmpeg capturing frames in background
     log_info "Starting webcam capture..."
     ffmpeg -f "$ff_input_fmt" -video_size 1920x1080 -framerate 30 -i "$ff_input_dev" \
-        -vf "fps=5" -q:v 2 \
+        -vf "fps=10" -q:v 2 \
         "$webcam_dir/frame_%06d.jpg" \
         -loglevel error -y 2>"$ffmpeg_log" &
     local ffmpeg_pid=$!
@@ -2295,7 +2359,8 @@ OPTIONS:
     -T, --terminal [mode]   Display QR codes in terminal (default: UTF8)
                             Modes: UTF8, ANSI, ASCII, UTF8i, ANSI256
                             If -o is omitted, only displays (no file output)
-    -W, --webcam            Decode from live webcam feed (requires ffmpeg)
+    -W, --webcam            Webcam streaming mode (encode: cycle QR codes
+                            in terminal at 2fps; decode: scan from webcam)
     -V, --video             Create MP4 video cycling through QR codes
     -G, --gif               Create animated GIF cycling through QR codes
     --frame-duration <sec>  Seconds per QR code in video/GIF (default: 2)
@@ -2343,8 +2408,15 @@ EXAMPLES:
     # Decode from a video recording
     qrar decode -o ./restored/ recording.mp4
 
+    # Stream QR codes to terminal for webcam transfer
+    qrar encode -W somefile.txt
+
     # Decode from live webcam feed
     qrar decode -W -o ./restored/
+
+    # Stream data between machines (encode on one, decode on other)
+    # Machine A: qrar encode -W largefile.bin
+    # Machine B: qrar decode -W -o ./received/
 
     # Decode from mixed sources
     qrar decode -o ./restored/ photo.jpg video.mp4 screenshot.png
@@ -2574,6 +2646,9 @@ main() {
     # Execute command
     case "$command" in
         encode)
+            if [[ "$WEBCAM_MODE" == true && -z "$TERMINAL_OUTPUT" ]]; then
+                TERMINAL_OUTPUT="UTF8"
+            fi
             if [[ -z "$output" && -z "$OUTPUT_DIR" ]]; then
                 if [[ -n "$TERMINAL_OUTPUT" ]]; then
                     # Terminal-only mode: no file output
