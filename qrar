@@ -530,9 +530,9 @@ encode_files() {
             local content_height=3272
             local dpi=300
 
-            # For PDF, create pages with max 48 QR codes each (6x8 grid)
-            local max_per_page=48
-            local page_cols=6
+            # For PDF, create pages with max 40 QR codes each (5x8 grid)
+            local max_per_page=40
+            local page_cols=5
             local page=1
             local total_files=${#labeled_files[@]}
             local total_pages=$(( (total_files + max_per_page - 1) / max_per_page ))
