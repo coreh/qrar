@@ -1210,6 +1210,263 @@ update_script() {
     log_success "Updated qrar to v$remote_version at $script_path"
 }
 
+# Map a generic package name to the package manager's actual package name
+pkg_name_for_pm() {
+    local pm="$1"
+    local pkg="$2"
+
+    case "$pm" in
+        apt)
+            case "$pkg" in
+                zbar) echo "zbar-tools" ;;
+                *) echo "$pkg" ;;
+            esac
+            ;;
+        apk)
+            case "$pkg" in
+                qrencode) echo "libqrencode-tools" ;;
+                *) echo "$pkg" ;;
+            esac
+            ;;
+        dnf|yum|zypper)
+            case "$pkg" in
+                imagemagick) echo "ImageMagick" ;;
+                *) echo "$pkg" ;;
+            esac
+            ;;
+        pkg)
+            case "$pkg" in
+                qrencode) echo "libqrencode" ;;
+                imagemagick) echo "ImageMagick7" ;;
+                ghostscript) echo "ghostscript10" ;;
+                *) echo "$pkg" ;;
+            esac
+            ;;
+        *)
+            echo "$pkg"
+            ;;
+    esac
+}
+
+# Build an uninstall command for a single package
+build_uninstall_cmd() {
+    local pm="$1"
+    local pkg="$2"
+
+    case "$pm" in
+        brew) echo "brew uninstall $pkg" ;;
+        apt) echo "sudo apt remove -y $pkg" ;;
+        dnf) echo "sudo dnf remove -y $pkg" ;;
+        yum) echo "sudo yum remove -y $pkg" ;;
+        pacman) echo "sudo pacman -R --noconfirm $pkg" ;;
+        apk) echo "sudo apk del $pkg" ;;
+        zypper) echo "sudo zypper remove -y $pkg" ;;
+        pkg) echo "sudo pkg delete -y $pkg" ;;
+    esac
+}
+
+uninstall_script() {
+    # Find where qrar is currently installed
+    local script_path="${BASH_SOURCE[0]}"
+    if [[ -n "$script_path" && -f "$script_path" ]]; then
+        while [[ -L "$script_path" ]]; do
+            script_path=$(readlink "$script_path")
+        done
+        script_path=$(cd "$(dirname "$script_path")" && pwd)/$(basename "$script_path")
+    fi
+
+    local os
+    os=$(detect_os)
+    local pm
+    pm=$(detect_package_manager "$os")
+
+    # Confirm uninstall
+    printf "Uninstall qrar? [y/N] "
+    read -r REPLY
+    if [[ ! "$REPLY" =~ ^[Yy]$ ]]; then
+        die "Aborted by user"
+    fi
+
+    # Remove the script itself
+    if [[ -n "$script_path" && -f "$script_path" ]]; then
+        if [[ "$script_path" == "/usr/local/bin/qrar" || "$script_path" == "$HOME/.local/bin/qrar" ]]; then
+            local target_dir
+            target_dir=$(dirname "$script_path")
+            if [[ -w "$target_dir" ]]; then
+                rm -f "$script_path"
+            else
+                sudo rm -f "$script_path"
+            fi
+            log_success "Removed $script_path"
+        else
+            log_warn "qrar is not installed in a standard location ($script_path), skipping script removal"
+        fi
+    fi
+
+    if [[ "$pm" == "none" ]]; then
+        log_warn "No supported package manager found, skipping dependency removal"
+        return 0
+    fi
+
+    # Prompt for required dependencies
+    local uninstall_all=false
+    local -a required_deps=(qrencode zbar)
+    local -a optional_deps=(openssl ffmpeg ghostscript imagemagick)
+
+    echo "" >&2
+    log_info "Required dependencies: ${required_deps[*]}"
+    for dep in "${required_deps[@]}"; do
+        # Check if the command exists (map dep name to command)
+        local check_cmd="$dep"
+        case "$dep" in
+            zbar) check_cmd="zbarimg" ;;
+        esac
+
+        if ! command -v "$check_cmd" &>/dev/null; then
+            continue
+        fi
+
+        local pm_pkg
+        pm_pkg=$(pkg_name_for_pm "$pm" "$dep")
+
+        if [[ "$uninstall_all" == true ]]; then
+            local cmd
+            cmd=$(build_uninstall_cmd "$pm" "$pm_pkg")
+            log_info "Uninstalling $dep..."
+            if eval "$cmd" 2>/dev/null; then
+                log_success "Uninstalled $dep"
+            else
+                log_warn "Failed to uninstall $dep"
+            fi
+            continue
+        fi
+
+        printf "Uninstall %s? [y/N/a(ll)] " "$dep"
+        read -r REPLY
+        case "$REPLY" in
+            [Yy])
+                local cmd
+                cmd=$(build_uninstall_cmd "$pm" "$pm_pkg")
+                log_info "Uninstalling $dep..."
+                if eval "$cmd" 2>/dev/null; then
+                    log_success "Uninstalled $dep"
+                else
+                    log_warn "Failed to uninstall $dep"
+                fi
+                ;;
+            [Aa])
+                uninstall_all=true
+                local cmd
+                cmd=$(build_uninstall_cmd "$pm" "$pm_pkg")
+                log_info "Uninstalling $dep..."
+                if eval "$cmd" 2>/dev/null; then
+                    log_success "Uninstalled $dep"
+                else
+                    log_warn "Failed to uninstall $dep"
+                fi
+                ;;
+            *)
+                verbose "Skipping $dep"
+                ;;
+        esac
+    done
+
+    # Prompt for optional dependencies (reset uninstall_all)
+    uninstall_all=false
+    local has_optional=false
+    for dep in "${optional_deps[@]}"; do
+        local check_cmd="$dep"
+        case "$dep" in
+            ghostscript) check_cmd="gs" ;;
+            imagemagick)
+                if command -v magick &>/dev/null; then
+                    check_cmd="magick"
+                elif command -v montage &>/dev/null; then
+                    check_cmd="montage"
+                else
+                    continue
+                fi
+                ;;
+        esac
+
+        if command -v "$check_cmd" &>/dev/null; then
+            has_optional=true
+            break
+        fi
+    done
+
+    if [[ "$has_optional" == true ]]; then
+        echo "" >&2
+        log_info "Optional dependencies:"
+        for dep in "${optional_deps[@]}"; do
+            local check_cmd="$dep"
+            case "$dep" in
+                ghostscript) check_cmd="gs" ;;
+                imagemagick)
+                    if command -v magick &>/dev/null; then
+                        check_cmd="magick"
+                    elif command -v montage &>/dev/null; then
+                        check_cmd="montage"
+                    else
+                        continue
+                    fi
+                    ;;
+            esac
+
+            if ! command -v "$check_cmd" &>/dev/null; then
+                continue
+            fi
+
+            local pm_pkg
+            pm_pkg=$(pkg_name_for_pm "$pm" "$dep")
+
+            if [[ "$uninstall_all" == true ]]; then
+                local cmd
+                cmd=$(build_uninstall_cmd "$pm" "$pm_pkg")
+                log_info "Uninstalling $dep..."
+                if eval "$cmd" 2>/dev/null; then
+                    log_success "Uninstalled $dep"
+                else
+                    log_warn "Failed to uninstall $dep"
+                fi
+                continue
+            fi
+
+            printf "Uninstall %s? [y/N/a(ll)] " "$dep"
+            read -r REPLY
+            case "$REPLY" in
+                [Yy])
+                    local cmd
+                    cmd=$(build_uninstall_cmd "$pm" "$pm_pkg")
+                    log_info "Uninstalling $dep..."
+                    if eval "$cmd" 2>/dev/null; then
+                        log_success "Uninstalled $dep"
+                    else
+                        log_warn "Failed to uninstall $dep"
+                    fi
+                    ;;
+                [Aa])
+                    uninstall_all=true
+                    local cmd
+                    cmd=$(build_uninstall_cmd "$pm" "$pm_pkg")
+                    log_info "Uninstalling $dep..."
+                    if eval "$cmd" 2>/dev/null; then
+                        log_success "Uninstalled $dep"
+                    else
+                        log_warn "Failed to uninstall $dep"
+                    fi
+                    ;;
+                *)
+                    verbose "Skipping $dep"
+                    ;;
+            esac
+        done
+    fi
+
+    echo "" >&2
+    log_success "qrar uninstalled"
+}
+
 extract_video_frames() {
     local video="$1"
     local output_dir="$2"
@@ -1628,12 +1885,14 @@ USAGE:
     qrar decode [OPTIONS] -o <output> <image>...
     qrar install [OPTIONS]
     qrar update
+    qrar uninstall
 
 COMMANDS:
     encode    Encode files/directories into QR code image(s)
     decode    Decode QR code image(s)/video(s) back to files
     install   Install dependencies and optionally the script itself
     update    Update qrar to the latest version from GitHub
+    uninstall Remove qrar and optionally its dependencies
 
 OPTIONS:
     -o, --output <path>     Output path (file for encode, directory for decode)
@@ -1724,6 +1983,9 @@ INSTALL COMMAND:
 UPDATE COMMAND:
     qrar update              Fetch latest version from GitHub and install
 
+UNINSTALL COMMAND:
+    qrar uninstall           Remove qrar script and prompt to remove dependencies
+
     Supported package managers:
     - macOS:   Homebrew (brew)
     - Debian:  apt (Ubuntu, Mint, Pop!_OS)
@@ -1772,6 +2034,10 @@ main() {
             update_script
             exit 0
             ;;
+        uninstall)
+            uninstall_script
+            exit 0
+            ;;
         -h|--help)
             show_help
             exit 0
@@ -1781,7 +2047,7 @@ main() {
             exit 0
             ;;
         *)
-            die "Unknown command: ${1:-}. Use 'encode', 'decode', 'install', or 'update'."
+            die "Unknown command: ${1:-}. Use 'encode', 'decode', 'install', 'update', or 'uninstall'."
             ;;
     esac
 
