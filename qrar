@@ -1261,7 +1261,7 @@ decode_files() {
     TEMP_DIR=$(mktemp -d)
     verbose "Using temp directory: $TEMP_DIR"
 
-    local all_images=""
+    local -a all_images=()
 
     # Process inputs: expand videos and PDFs to images
     for input in "${inputs[@]}"; do
@@ -1283,7 +1283,7 @@ decode_files() {
             # Add extracted frames to image list (jpg for videos, png for gifs)
             for frame in "$frame_dir"/frame_*.jpg "$frame_dir"/frame_*.png; do
                 if [[ -f "$frame" ]]; then
-                    all_images="$all_images $frame"
+                    all_images+=("$frame")
                 fi
             done
         elif is_pdf_file "$input"; then
@@ -1299,23 +1299,19 @@ decode_files() {
             # Add extracted pages to image list
             for page in "$pdf_dir"/page_*.png; do
                 if [[ -f "$page" ]]; then
-                    all_images="$all_images $page"
+                    all_images+=("$page")
                 fi
             done
         else
-            all_images="$all_images $input"
+            all_images+=("$input")
         fi
     done
 
-    if [[ -z "$all_images" ]]; then
+    if [[ ${#all_images[@]} -eq 0 ]]; then
         die "No valid images to process"
     fi
 
-    # Count images
-    local img_count=0
-    for _ in $all_images; do
-        img_count=$((img_count + 1))
-    done
+    local img_count=${#all_images[@]}
 
     log_info "Scanning $img_count image(s)..."
 
@@ -1323,7 +1319,7 @@ decode_files() {
     local qr_file="$TEMP_DIR/qrcodes.txt"
     : > "$qr_file"
 
-    for img in $all_images; do
+    for img in "${all_images[@]}"; do
         scan_images "$img" >> "$qr_file"
     done
 
@@ -1341,7 +1337,7 @@ decode_files() {
     local sessions_dir="$TEMP_DIR/sessions"
     mkdir -p "$sessions_dir"
 
-    local sessions_found=""
+    local -a sessions_found=()
     local session_info_file="$TEMP_DIR/session_info.txt"
     : > "$session_info_file"
 
@@ -1356,7 +1352,7 @@ decode_files() {
         local sess_dir="$sessions_dir/$session"
         if [[ ! -d "$sess_dir" ]]; then
             mkdir -p "$sess_dir"
-            sessions_found="$sessions_found $session"
+            sessions_found+=("$session")
             # Store session info
             echo "$session|$total|$checksum|$enc_flag|$comp_flag" >> "$session_info_file"
         fi
@@ -1366,11 +1362,7 @@ decode_files() {
 
     done < "$qr_file"
 
-    # Count unique sessions
-    local session_count=0
-    for _ in $sessions_found; do
-        session_count=$((session_count + 1))
-    done
+    local session_count=${#sessions_found[@]}
 
     if [[ $session_count -eq 0 ]]; then
         die "No valid sessions found"
@@ -1507,22 +1499,21 @@ decode_files() {
 
     # Check for overwrites
     if [[ "$FORCE" != true ]]; then
-        local would_overwrite=""
-        local overwrite_count=0
+        local -a would_overwrite=()
 
         while IFS= read -r file; do
             # Remove leading ./ if present
             file="${file#./}"
             if [[ -e "$out_dir/$file" ]]; then
-                would_overwrite="$would_overwrite $file"
-                overwrite_count=$((overwrite_count + 1))
+                would_overwrite+=("$file")
             fi
         done < <(tar -tf "$archive_file" 2>/dev/null)
 
+        local overwrite_count=${#would_overwrite[@]}
         if [[ $overwrite_count -gt 0 ]]; then
             log_warn "The following files would be overwritten:"
             local shown=0
-            for f in $would_overwrite; do
+            for f in "${would_overwrite[@]}"; do
                 if [[ $shown -lt 10 ]]; then
                     echo "  $f"
                     shown=$((shown + 1))
