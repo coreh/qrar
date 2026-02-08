@@ -162,15 +162,22 @@ cat recording.mp4 | qrar decode
 
 | Option | Description |
 |--------|-------------|
-| `-o, --output <path>` | Output file or directory |
-| `-e, --encrypt` | Enable encryption (prompts for passphrase) |
-| `-T, --terminal` | Display QR code(s) in terminal |
+| `-o, --output <path>` | Output path (file for encode, directory for decode) |
+| `-O, --output-dir <dir>` | Output directory |
+| `-l, --level <L\|M\|Q\|H>` | Error correction level (default: M). L=7%, M=15%, Q=25%, H=30% recovery |
+| `-s, --size <pixels>` | QR code dot size (default: 10) |
+| `-c, --compression <type>` | Compression: `gz`, `xz`, `none` (default: `gz`) |
+| `-e, --encrypt` | Encrypt data (prompts for passphrase) |
+| `-p, --passphrase <pass>` | Encryption/decryption passphrase (inline, avoids prompt) |
+| `-f, --force` | Overwrite files without confirmation |
+| `-T, --terminal [mode]` | Display QR codes in terminal. Modes: `UTF8`, `UTF8i` (inverted), `ANSI`, `ASCII`, `ANSI256` (default: `UTF8`) |
 | `-G, --gif` | Output as animated GIF |
 | `-V, --video` | Output as MP4 video |
-| `-m, --montage` | Consolidate all QR codes in one image |
-| `-W, --webcam` | Webcam streaming mode (encode: cycle QR codes at 2fps; decode: scan from webcam) |
-| `-P, --print` | Consolidate all QR codes in a print-ready multi-page PDF |
-| `-q, --quiet` | Suppress non-essential output |
+| `-m, --montage` | Combine all QR codes into a single image |
+| `-P, --print` | Combine all QR codes into a print-ready multi-page PDF |
+| `--montage-cols <n>` | Number of columns in montage (default: auto) |
+| `-W, --webcam` | Webcam mode (encode: cycle QR codes at 2fps; decode: scan from webcam) |
+| `--frame-duration <sec>` | Seconds per QR code in video/GIF (default: 2) |
 | `--verbose` | Show detailed progress |
 | `-v, --version` | Show version |
 | `-h, --help` | Show help |
