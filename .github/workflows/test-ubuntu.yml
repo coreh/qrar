@@ -1,0 +1,22 @@
+name: Tests (Ubuntu)
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install dependencies
+        run: sudo apt-get update && sudo apt-get install -y qrencode zbar-tools ffmpeg openssl imagemagick
+
+      - name: Run unit tests
+        run: test/unit/run
+
+      - name: Run functional tests
+        run: test/functional/run

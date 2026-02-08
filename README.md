@@ -1,5 +1,9 @@
 # qrar
 
+[![Lint](https://github.com/coreh/qrar/actions/workflows/lint.yml/badge.svg)](https://github.com/coreh/qrar/actions/workflows/lint.yml)
+[![Tests (macOS)](https://github.com/coreh/qrar/actions/workflows/test-macos.yml/badge.svg)](https://github.com/coreh/qrar/actions/workflows/test-macos.yml)
+[![Tests (Ubuntu)](https://github.com/coreh/qrar/actions/workflows/test-ubuntu.yml/badge.svg)](https://github.com/coreh/qrar/actions/workflows/test-ubuntu.yml)
+
 Pure shell, single file utility script to encode and decode multiple files to/from QR codes. (Via `qrencode`, `zbarimg`, `tar`, `ffmpeg`, `magick`, `openssl`, `ghostscript`) Supports splitting large files across multiple QR codes, compression, optional encryption, and various output/input formats, including live webcam feed.
 
 ```bash
