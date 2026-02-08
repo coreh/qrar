@@ -43,7 +43,7 @@ test_stdin_binary_pipe() {
     # Generate small binary data
     printf '\x00\x01\x02\x03\x04\x05\xff\xfe\xfd' > "$original"
 
-    cat "$original" | "$QRAR" encode -o "$encode_dir/qr.png" 2>/dev/null
+    "$QRAR" encode -o "$encode_dir/qr.png" < "$original" 2>/dev/null
     assertTrue "encode binary from stdin should succeed" $?
 
     "$QRAR" decode -f -o "$decode_dir" "$encode_dir"/*.png 2>/dev/null
