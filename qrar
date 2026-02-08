@@ -245,9 +245,8 @@ trap cleanup EXIT
 
 # Cycle QR codes in terminal at 2fps for webcam streaming mode
 cycle_qr_terminal() {
-    local terminal_mode="$1"
-    local error_level="$2"
-    shift 2
+    local error_level="$1"
+    shift
     local payloads=("$@")
     local total=${#payloads[@]}
 
@@ -347,7 +346,7 @@ encode_files() {
         if [[ "${inputs[$i]}" == "-" ]]; then
             local stdin_file="$TEMP_DIR/stdin"
             cat > "$stdin_file"
-            inputs[$i]="$stdin_file"
+            inputs[i]="$stdin_file"
         fi
     done
 
@@ -358,7 +357,7 @@ encode_files() {
 
     # Build tar args, using -C for stdin temp files
     local -a tar_args=(-c)
-    [[ -n "$tar_compress" ]] && tar_args+=($tar_compress)
+    [[ -n "$tar_compress" ]] && tar_args+=("$tar_compress")
     tar_args+=(-f "$archive")
 
     local has_stdin=false
@@ -572,7 +571,8 @@ encode_files() {
         local label_dir="$TEMP_DIR/labeled"
         mkdir -p "$label_dir"
         for qr_file in "${generated_files[@]}"; do
-            local labeled_file="$label_dir/$(printf '%03d' $qr_num).png"
+            local labeled_file
+            labeled_file="$label_dir/$(printf '%03d' "$qr_num").png"
             $convert_cmd "$qr_file" \
                 -gravity South \
                 -background white \
@@ -599,9 +599,6 @@ encode_files() {
                 cols=6
             fi
         fi
-
-        # Calculate rows needed (for reference, not currently used)
-        local rows=$(( (num_images + cols - 1) / cols ))
 
         # Check if we need multi-page PDF
         local ext="${montage_file##*.}"
@@ -667,7 +664,8 @@ encode_files() {
                         j=$((j + 1))
                     done
 
-                    local temp_montage="$montage_dir/montage_$(printf '%03d' $page).png"
+                    local temp_montage
+                    temp_montage="$montage_dir/montage_$(printf '%03d' "$page").png"
                     $montage_cmd \
                         "${page_files[@]}" \
                         -tile "${page_cols}x" \
@@ -681,7 +679,8 @@ encode_files() {
 
                     # Resize to fit A4, align to top with margin, add page number
                     local top_margin=120
-                    local page_file="$montage_dir/page_$(printf '%03d' $page).png"
+                    local page_file
+                    page_file="$montage_dir/page_$(printf '%03d' "$page").png"
                     $convert_cmd "$temp_montage" \
                         -resize "${content_width}x${content_height}>" \
                         -gravity North \
@@ -750,7 +749,7 @@ encode_files() {
 
     # Webcam streaming mode: cycle QR codes in terminal at 2fps
     if [[ "$WEBCAM_MODE" == true && ${#qr_payloads[@]} -gt 0 ]]; then
-        cycle_qr_terminal "${TERMINAL_OUTPUT:-UTF8}" "$ERROR_LEVEL" "${qr_payloads[@]}"
+        cycle_qr_terminal "$ERROR_LEVEL" "${qr_payloads[@]}"
     fi
 }
 
@@ -1025,6 +1024,7 @@ install_dependencies() {
     if [[ "$pm" == "none" ]]; then
         if [[ "$os" == "macos" ]]; then
             log_error "Homebrew not found. Install it first:"
+            # shellcheck disable=SC2016
             echo '  /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"' >&2
         else
             log_error "Could not detect a supported package manager."
@@ -1158,7 +1158,7 @@ offer_script_install() {
                 ;;
         esac
     else
-        printf "Install qrar to $system_bin? [y/N] "
+        printf "Install qrar to %s? [y/N] " "$system_bin"
         if [[ "$piped_install" == true ]]; then
             read -r REPLY < /dev/tty
         else
@@ -1201,6 +1201,7 @@ install_script_to_path() {
 
         local tmp_script
         tmp_script=$(mktemp)
+        # shellcheck disable=SC2064
         trap "rm -f '$tmp_script'; cleanup" EXIT
 
         if curl -fsSL "$download_url" -o "$tmp_script"; then
@@ -1263,6 +1264,7 @@ update_script() {
     log_info "Checking for updates..."
     local tmp_script
     tmp_script=$(mktemp)
+    # shellcheck disable=SC2064
     trap "rm -f '$tmp_script'; cleanup" EXIT
 
     if ! curl -fsSL "$download_url" -o "$tmp_script"; then
@@ -1606,7 +1608,7 @@ extract_pdf_pages() {
         die "Failed to extract pages from PDF: $pdf (is ghostscript installed?)"
 
     local page_count
-    page_count=$(ls -1 "$output_dir"/page_*.png 2>/dev/null | wc -l | tr -d ' ')
+    page_count=$(find "$output_dir" -maxdepth 1 -name 'page_*.png' 2>/dev/null | wc -l | tr -d ' ')
     verbose "Extracted $page_count pages"
 }
 
@@ -1639,7 +1641,7 @@ parse_chunk() {
     local data="$1"
 
     # Format: QRT:V1:<enc><comp>:<seq>/<total>:<session>:<checksum>:<data>
-    local rest="${data#${MAGIC}:V1:}"
+    local rest="${data#"${MAGIC}":V1:}"
 
     # Parse flags (2 chars)
     local flags="${rest%%:*}"
@@ -1848,6 +1850,7 @@ decode_webcam() {
     local ffmpeg_pid=$!
 
     # Register cleanup to kill ffmpeg on exit
+    # shellcheck disable=SC2064
     trap "kill $ffmpeg_pid 2>/dev/null; wait $ffmpeg_pid 2>/dev/null; cleanup" EXIT INT TERM
 
     # Wait for ffmpeg to start producing frames (up to 5 seconds)
@@ -1933,7 +1936,7 @@ decode_webcam() {
 
         # Grab the latest frame, skip any older ones
         local frame_file
-        frame_file=$(ls -1 "$webcam_dir"/frame_*.jpg 2>/dev/null | tail -1)
+        frame_file=$(find "$webcam_dir" -maxdepth 1 -name 'frame_*.jpg' 2>/dev/null | sort | tail -1)
         if [[ -z "$frame_file" || ! -f "$frame_file" ]]; then
             continue
         fi
@@ -2093,7 +2096,7 @@ decode_files() {
             if [[ "${inputs[$i]}" == "-" ]]; then
                 local stdin_input="$TEMP_DIR/stdin_input"
                 cat > "$stdin_input"
-                inputs[$i]="$stdin_input"
+                inputs[i]="$stdin_input"
             fi
         done
 
@@ -2197,7 +2200,7 @@ decode_files() {
         while IFS='|' read -r session total checksum enc_flag comp_flag; do
             # Count chunks we have for this session
             local chunk_count
-            chunk_count=$(ls -1 "$sessions_dir/$session"/chunk_*.txt 2>/dev/null | wc -l | tr -d ' ')
+            chunk_count=$(find "$sessions_dir/$session" -maxdepth 1 -name 'chunk_*.txt' 2>/dev/null | wc -l | tr -d ' ')
 
             local enc_str="unencrypted"
             [[ "$enc_flag" == "E" ]] && enc_str="encrypted"
@@ -2213,11 +2216,10 @@ decode_files() {
     local best_total=0
     local best_checksum=""
     local best_enc_flag=""
-    local best_comp_flag=""
 
-    while IFS='|' read -r session total checksum enc_flag comp_flag; do
+    while IFS='|' read -r session total checksum enc_flag _comp_flag; do
         local chunk_count
-        chunk_count=$(ls -1 "$sessions_dir/$session"/chunk_*.txt 2>/dev/null | wc -l | tr -d ' ')
+        chunk_count=$(find "$sessions_dir/$session" -maxdepth 1 -name 'chunk_*.txt' 2>/dev/null | wc -l | tr -d ' ')
 
         if [[ $chunk_count -eq $total ]]; then
             best_session="$session"
@@ -2225,7 +2227,6 @@ decode_files() {
             best_total=$total
             best_checksum="$checksum"
             best_enc_flag="$enc_flag"
-            best_comp_flag="$comp_flag"
             break
         elif [[ $chunk_count -gt $best_completion ]]; then
             best_session="$session"
@@ -2233,7 +2234,6 @@ decode_files() {
             best_total=$total
             best_checksum="$checksum"
             best_enc_flag="$enc_flag"
-            best_comp_flag="$comp_flag"
         fi
     done < "$session_info_file"
 

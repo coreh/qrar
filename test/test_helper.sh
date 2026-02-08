@@ -9,6 +9,7 @@
 TEST_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 PROJECT_DIR="$(cd "$TEST_DIR/.." && pwd)"
 QRAR="$PROJECT_DIR/qrar"
+# shellcheck disable=SC2034
 SHUNIT2="$TEST_DIR/lib/shunit2"
 
 # Source the qrar script (source guard prevents main from running)
