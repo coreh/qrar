@@ -1,4 +1,4 @@
-name: Tests
+name: CI
 
 on:
   push:
@@ -7,6 +7,17 @@ on:
     branches: [main]
 
 jobs:
+  lint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install ShellCheck
+        run: sudo apt-get update && sudo apt-get install -y shellcheck
+
+      - name: Lint
+        run: shellcheck qrar && shellcheck -x -e SC1091 test/test_helper.sh test/unit/*.sh test/functional/*.sh
+
   test:
     strategy:
       fail-fast: false
